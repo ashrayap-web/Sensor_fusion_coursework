@@ -1,0 +1,311 @@
+% function [X_Est, P_Est, GT] = myEKF(out)
+%     dt = 1/200;
+% 
+%     f = [
+%             1, dt, 0.5*dt^2, 0,  0,        0, 0,  0;
+%             0,  1,       dt, 0,  0,        0, 0,  0;
+%             0,  0,        1, 0,  0,        0, 0,  0;
+%             0,  0,        0, 1, dt, 0.5*dt^2, 0,  0;
+%             0,  0,        0, 0,  1,       dt, 0,  0;
+%             0,  0,        0, 0,  0,        1, 0,  0;
+%             0,  0,        0, 0,  0,        0, 1, dt;
+%             0,  0,        0, 0,  0,        0, 0,  1;
+%     ];
+% 
+% 
+%     % Very important to instantly convert from robot frame to world frame
+%     % as soon as the readings are taken, the maths depends on it
+%     % its what allows our maths to be relatively simple
+% 
+%     % magnetometer
+%     Bx, By, Bz = [0 0 0]; % sensor readings
+%     theta_sensor = atan2(bx,by); % depending on orientation, bx, by, bz might need changing
+% 
+%     h = theta; % from state variable
+%     H = [0,0,0,0,0,0,1,0];
+% 
+%     % TOF equations are on other document with all the maths 
+% 
+%     % Accelerometer
+%     ax_body, ay_body, az_body = [0 0 0]; % sensor readings
+% 
+%     % convert body to world, depending on orientation might need to change
+%     % x y z
+%     ax_world = cos(theta) * ax_body - sin(theta) * ay_body;
+%     ay_world = sin(theta) * ax_body + cos(theta) * ay_body;
+% 
+%     h = [0,0,1,0,0,0,0,0];
+%     H = [0,0,0,0,0,1,0,0];
+% 
+%     % gyroscope
+%     omega = 0; % take reading from gyro
+%     h = omega; % from state
+%     H = [0,0,0,0,0,0,0,1];
+% 
+% 
+% 
+% 
+% end
+
+%%
+
+
+function [X_Est, P_Est, GT] = myEKF(out)
+    % myEKF: Extended Kalman Filter for Sub-terranean Navigation
+    %
+    % Inputs:
+    %   out - Struct containing logged sensor and ground truth data
+    %
+    % Outputs:
+    %   X_Est - Estimated state matrix [8 x N]
+    %   P_Est - Estimated covariance matrix [8 x 8 x N]
+    %   GT    - Ground truth position matrix [3 x N] (X, Y, Z)
+
+    %% 1. INITIALIZATION
+    % Extract timestamps and determine the number of iterations
+    t = out.Sensor_Time; 
+    N = length(t);
+    
+    % Initialize outputs
+    X_Est = zeros(8, N);
+    P_Est = zeros(8, 8, N);
+    
+    % Extract Ground Truth for output (X, Y, Z)
+    GT = out.GT_position; 
+    
+    % Define the State Vector: [x, vx, ax, y, vy, ay, theta, omega]'
+    % Initialize the first state (You must use the first few GT points as per brief)
+    x_current = zeros(8, 1);
+    x_current(1) = GT(1, 1); % Initial X
+    x_current(4) = GT(2, 1); % Initial Y
+    
+    % Initial Covariance (P)
+    P_current = eye(8) * 0.1; % Tune this based on initial certainty
+    
+    % Process Noise Covariance (Q) - TUNE THESE VALUES
+    Q = eye(8) * 0.01; 
+    
+    % ToF Measurement Noise Variance (R) - TUNE THIS VALUE
+    R_tof = 0.05; 
+    
+    %% 2. HARDWARE / ENVIRONMENT CONFIGURATION
+    % TUNE THESE: Provide actual arena bounds
+    arena.x_min = -5.0; 
+    arena.x_max = 5.0;
+    arena.y_min = -5.0;
+    arena.y_max = 5.0;
+    
+    % TUNE THESE: Provide actual sensor mounting offsets
+    % ToF 1 (Forward)
+    sensors(1).offset_x = 0.1; 
+    sensors(1).offset_y = 0.0;
+    sensors(1).angle_offset = 0;
+    
+    % ToF 2 (Left/Right)
+    sensors(2).offset_x = 0.0;
+    sensors(2).offset_y = 0.1;
+    sensors(2).angle_offset = pi/2; % 90 degrees
+    
+    % ToF 3 (Right/Left)
+    sensors(3).offset_x = 0.0;
+    sensors(3).offset_y = -0.1;
+    sensors(3).angle_offset = -pi/2; % -90 degrees
+
+    %% 3. MAIN FILTER LOOP
+    for k = 2:N
+        dt = t(k) - t(k-1);
+        
+        % --- A. PREDICTION STEP (Kinematic Model) ---
+        % State Transition Matrix (F) for discrete-time constant acceleration
+        F = eye(8);
+        
+        % X-axis kinematics
+        F(1, 2) = dt;       F(1, 3) = 0.5 * dt^2;
+        F(2, 3) = dt;
+        
+        % Y-axis kinematics
+        F(4, 5) = dt;       F(4, 6) = 0.5 * dt^2;
+        F(5, 6) = dt;
+        
+        % Yaw kinematics
+        F(7, 8) = dt;
+        
+        % Predict state and covariance
+        x_pred = F * x_current;
+        P_pred = F * P_current * F' + Q;
+        
+        % --- B. IMU MEASUREMENT UPDATE (Optional/To-Do) ---
+        % Here you would typically use out.Sensor_ACCEL and out.Sensor_GYRO
+        % to update ax, ay, and omega. 
+        % e.g., z_imu = [accel_x; accel_y; gyro_z];
+        
+        % --- C. TOF MEASUREMENT UPDATE ---
+        % ToF sensors operate at 10Hz, while the main loop might be 200Hz.
+        % In a real scenario, you'd check if a new ToF measurement arrived.
+        % For this skeleton, we assume we extract the current ToF readings.
+        % ToF data structure: [Distance, Ambient, Signal, Status]
+        tof1_dist = out.Sensor_ToF1(1, k);
+        tof2_dist = out.Sensor_ToF2(1, k);
+        tof3_dist = out.Sensor_ToF3(1, k);
+        z_tof = [tof1_dist; tof2_dist; tof3_dist];
+        
+        % Filter out bad readings (e.g., using status codes or Out-of-Bounds)
+        % For simplicity, assuming all are valid > 0
+        if all(z_tof > 0)
+            [x_current, P_current] = ekf_tof_update(x_pred, P_pred, z_tof, sensors, arena, R_tof);
+        else
+            x_current = x_pred;
+            P_current = P_pred;
+        end
+        
+        % Save estimates for output
+        X_Est(:, k) = x_current;
+        P_Est(:, :, k) = P_current;
+    end
+end
+
+%% =========================================================================
+% HELPER FUNCTIONS (Must remain in this file)
+% ==========================================================================
+
+function [x_est, P_est] = ekf_tof_update(x_pred, P_pred, z_tof, sensors, arena, R_tof)
+    x_est = x_pred;
+    P_est = P_pred;
+    
+    for sensor_idx = 1:3
+        % Skip invalid measurements (Inf or zero)
+        if z_tof(sensor_idx) <= 0 || isinf(z_tof(sensor_idx))
+            continue;
+        end
+        
+        % 1. Compute expected measurement
+        h_val = h_tof_sensor(x_est, sensors(sensor_idx), arena);
+        
+        if isinf(h_val)
+            continue; % Ray didn't hit anything valid
+        end
+        
+        % 2. Compute Jacobian
+        H = compute_H_tof_numerical(x_est, sensors(sensor_idx), arena, 1e-6);
+        
+        % 3. Compute innovation
+        innovation = z_tof(sensor_idx) - h_val;
+        
+        % 4. Compute innovation covariance
+        S = H * P_est * H' + R_tof;
+        
+        % 5. Compute Kalman gain
+        K = P_est * H' / S;
+        
+        % 6. Update state
+        x_est = x_est + K * innovation;
+        
+        % 7. Update covariance
+        P_est = (eye(8) - K * H) * P_est;
+    end
+end
+
+function h = h_tof_sensor(x_state, sensor_config, arena)
+    % Extract state
+    x = x_state(1);
+    y = x_state(4);
+    theta = x_state(7);
+    
+    % Extract config
+    dx = sensor_config.offset_x;
+    dy = sensor_config.offset_y;
+    angle_offset = sensor_config.angle_offset;
+    
+    % Sensor position in world frame
+    c = cos(theta);
+    s = sin(theta);
+    x_sensor = x + dx*c - dy*s;
+    y_sensor = y + dx*s + dy*c;
+    
+    % Ray direction in world frame
+    ray_angle = theta + angle_offset;
+    ray_dx = cos(ray_angle);
+    ray_dy = sin(ray_angle);
+    
+    distances = [];
+    epsilon = 1e-6;
+    
+    % Ray-cast against vertical walls
+    if abs(ray_dx) > epsilon
+        % Right wall
+        t = (arena.x_max - x_sensor) / ray_dx;
+        if t > 0
+            y_hit = y_sensor + t * ray_dy;
+            if y_hit >= arena.y_min && y_hit <= arena.y_max
+                distances(end+1) = t;
+            end
+        end
+        % Left wall
+        t = (arena.x_min - x_sensor) / ray_dx;
+        if t > 0
+            y_hit = y_sensor + t * ray_dy;
+            if y_hit >= arena.y_min && y_hit <= arena.y_max
+                distances(end+1) = t;
+            end
+        end
+    end
+    
+    % Ray-cast against horizontal walls
+    if abs(ray_dy) > epsilon
+        % Front wall
+        t = (arena.y_max - y_sensor) / ray_dy;
+        if t > 0
+            x_hit = x_sensor + t * ray_dx;
+            if x_hit >= arena.x_min && x_hit <= arena.x_max
+                distances(end+1) = t;
+            end
+        end
+        % Back wall
+        t = (arena.y_min - y_sensor) / ray_dy;
+        if t > 0
+            x_hit = x_sensor + t * ray_dx;
+            if x_hit >= arena.x_min && x_hit <= arena.x_max
+                distances(end+1) = t;
+            end
+        end
+    end
+    
+    if isempty(distances)
+        h = Inf;
+    else
+        h = min(distances);
+    end
+end
+
+function H = compute_H_tof_numerical(x_state, sensor_config, arena, eps)
+    H = zeros(1, 8);
+    h0 = h_tof_sensor(x_state, sensor_config, arena);
+    
+    if isinf(h0)
+        return; % Cannot compute derivative if no intersection
+    end
+    
+    % Partial derivative wrt x (index 1)
+    x_pert = x_state; 
+    x_pert(1) = x_pert(1) + eps;
+    h_pert = h_tof_sensor(x_pert, sensor_config, arena);
+    if ~isinf(h_pert)
+        H(1) = (h_pert - h0) / eps;
+    end
+    
+    % Partial derivative wrt y (index 4)
+    x_pert = x_state; 
+    x_pert(4) = x_pert(4) + eps;
+    h_pert = h_tof_sensor(x_pert, sensor_config, arena);
+    if ~isinf(h_pert)
+        H(4) = (h_pert - h0) / eps;
+    end
+    
+    % Partial derivative wrt theta (index 7)
+    x_pert = x_state; 
+    x_pert(7) = x_pert(7) + eps;
+    h_pert = h_tof_sensor(x_pert, sensor_config, arena);
+    if ~isinf(h_pert)
+        H(7) = (h_pert - h0) / eps;
+    end
+end
