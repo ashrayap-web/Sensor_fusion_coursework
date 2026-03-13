@@ -12,10 +12,10 @@ function [X_Est, P_Est, GT] = myEKF(out)
 % Arena bounds — measured from actual GT start position
 % Robot starts at y=-0.933, confirming y_min is approximately -1.0
 % Adjust x/y max based on your actual arena dimensions from the brief
-arena.x_min = -1.2;
-arena.x_max =  1.2;
-arena.y_min = -1.2;
-arena.y_max =  1.2;
+arena.x_min = -1.275;
+arena.x_max =  1.275;
+arena.y_min = -1.275;
+arena.y_max =  1.275;
 
 %==========================================================================
 % IMU AXIS REMAPPING
@@ -36,8 +36,8 @@ arena.y_max =  1.2;
 %   Quaternion: pitch-axis convention (conv 3) selected automatically
 ACCEL_X_IDX  = 2;   ACCEL_X_SIGN =  1;   % body-forward (col1=gravity, skip)
 ACCEL_Y_IDX  = 3;   ACCEL_Y_SIGN =  1;   % body-left lateral
-GYRO_Z_IDX   = 3;   GYRO_Z_SIGN  =  -1;   % yaw rate — bias only -0.00119 rad/s
-GYRO_SCALE   = 1.0; % update from calibrate_gyro.m if scale != 1.0
+GYRO_Z_IDX   = 1;   GYRO_Z_SIGN  =  -1;   % yaw rate — bias only -0.00119 rad/s
+GYRO_SCALE   = pi/180; % deg/s → rad/s (verified from calib1_rotate.mat raw values)
 
 %==========================================================================
 % SENSOR MOUNTING — body frame offsets (metres)
@@ -52,18 +52,18 @@ sensors(3).offset_x =  0.00;  sensors(3).offset_y = -0.10;  sensors(3).angle_off
 %==========================================================================
 % Process noise
 Q = zeros(8,8);
-Q(1,1) = 5; % x uncertainty
-Q(2,2) = 1.0; %0.01    % vx diffusion
-Q(3,3) = 8.0;     % ax uncertainty (large — don't trust accel for position)
-Q(4,4) = 0.1; % y uncertainty
-Q(5,5) = 0.01;    % vy diffusion
-Q(6,6) = 5.0;     % ay uncertainty
-Q(7,7) = 0.0; % theta
+Q(1,1) = 0.01; % x uncertainty
+Q(2,2) = 0.001; %0.01    % vx diffusion
+Q(3,3) = 3.0;     % ax uncertainty (large — don't trust accel for position)
+Q(4,4) = 0.01; % y uncertainty
+Q(5,5) = 0.001;    % vy diffusion
+Q(6,6) = 3.0;     % ay uncertainty
+Q(7,7) = 0.00001; % theta
 Q(8,8) = 0.25;    % omega uncertainty
 
 % Measurement noise
-R_accel = (1.33)^2;    % accel measurement — large, only corrects ax/ay
-R_gyro  = (0.3)^2;  % gyro very trusted
+R_accel = (1.02)^2;   % 3× accel std from calibration (col2 std=0.34 m/s²)
+R_gyro  = (0.008)^2; % placeholder — overridden below by calibrated value
 R_tof   = (0.02)^2;   % ToF accurate when valid
 
 USE_MAG = false;
@@ -151,14 +151,14 @@ end
 % The first ~0.5s of any run the robot is stationary.
 % Use MORE samples (200 @ 104Hz ≈ 2s) for a better bias estimate.
 %==========================================================================
-n_bias = min(200, N);
-raw_gz = GYRO_Z_SIGN * double(gyro(1:n_bias, GYRO_Z_IDX));
-gyro_bias_z = -0.031618;
-gyro_bias_std = 0.109365;
-fprintf('Gyro bias: %.6f rad/s  (std=%.6f)\n', gyro_bias_z, gyro_bias_std);
-
-% Update gyro noise based on measured bias stability
-R_gyro = max((0.003)^2, gyro_bias_std^2 * 2);
+% Gyro bias hardcoded from calib2_straight.mat (6240 stationary samples, 60s):
+%   col3 yaw: mean = -10.2227 deg/s × pi/180 = -0.17842 rad/s
+%   col3 std  =  0.2295 deg/s × pi/180 =  0.00401 rad/s
+% 30× more samples than the 200-sample runtime estimate → much more reliable
+gyro_bias_z   = -0.17842;   % rad/s  (yaw axis col3, after deg/s→rad/s)
+gyro_bias_std =  0.00401;   % rad/s
+R_gyro = (gyro_bias_std * 2)^2;   % = (0.00802)^2 = 6.4e-5
+fprintf('Gyro bias (calibrated): %.6f rad/s  (std=%.6f)\n', gyro_bias_z, gyro_bias_std);
 
 %==========================================================================
 % INITIALISE STATE
@@ -231,8 +231,9 @@ for k = 2:N   % start at 2 — k=1 already written above as init state
     [x_pred, P_pred] = ekf_update(x_pred, P_pred, omega_meas, x_pred(8), H_gyro, R_gyro);
 
     % --- ACCELEROMETER UPDATE (ax/ay only — does NOT affect x,y position) ---
-    ax_body = ACCEL_X_SIGN * double(accel(k, ACCEL_X_IDX));
-    ay_body = ACCEL_Y_SIGN * double(accel(k, ACCEL_Y_IDX));
+    % Subtract accel bias (from calib2_straight.mat, 60s stationary):
+    ax_body = ACCEL_X_SIGN * (double(accel(k, ACCEL_X_IDX)) - (-0.3861)); % col2 bias
+    ay_body = ACCEL_Y_SIGN * (double(accel(k, ACCEL_Y_IDX)) - ( 0.0254)); % col3 bias
     c = cos(x_pred(7));  s = sin(x_pred(7));
     ax_world =  c*ax_body - s*ay_body;
     ay_world =  s*ax_body + c*ay_body;

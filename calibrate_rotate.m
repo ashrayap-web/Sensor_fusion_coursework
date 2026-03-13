@@ -169,8 +169,14 @@ fprintf(' RESULTS — COPY INTO myEKF.m\n');
 fprintf('==========================================================\n');
 fprintf('  GYRO_Z_IDX  = %d;\n', best_col);
 fprintf('  GYRO_Z_SIGN = %d;\n', best_sign_val);
-if scale_needed
-    fprintf('  GYRO_SCALE  = %.4f;  %% >5%% error — apply correction\n', abs(best_scale));
+% Check if gyro data is in deg/s by comparing integrated rotation to GT
+% If |total_gyro_deg / total_gt_deg| ≈ 57.3 → data is in deg/s not rad/s
+dps_ratio = abs(rad2deg(results(best_col).theta_int(end)) / (rad2deg(gt_yaw_rel(end)) + 1e-9));
+if abs(dps_ratio - 57.3) < 10
+    fprintf('  GYRO_SCALE  = pi/180; %% DATA IS IN deg/s — unit conversion required!\n');
+    fprintf('  %% Verified: raw integrated = %.1f x GT → deg/s confirmed\n', dps_ratio);
+elseif scale_needed
+    fprintf('  GYRO_SCALE  = %.4f;  %% >5%% scale error\n', abs(best_scale));
 else
     fprintf('  GYRO_SCALE  = 1.0;   %% within 5%% — no correction needed\n');
 end

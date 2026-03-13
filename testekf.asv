@@ -6,7 +6,7 @@ clear; close all; clc;
 %--------------------------------------------------------------------------
 % CONFIGURATION
 %--------------------------------------------------------------------------
-DATA_FILE = 'task2_1 1.mat';   % <-- set your .mat path here
+DATA_FILE = 'task1_1_estimated.mat';   % <-- set your .mat path her
 TASK_NAME = 'Task 1';               % <-- 'Task 1' or 'Task 2'
 
 %--------------------------------------------------------------------------
@@ -124,7 +124,7 @@ title(sprintf('%s  —  2D Trajectory\nRMSE_{pos} = %.4f m     RMSE_{\\theta} = 
 legend([h_gt, h_est], 'Location', 'best', 'FontSize', 11);
 
 xlim([-1.2, 1.2]);
-ylim([-1.2, ]);
+ylim([-1.2, 1.2]);
 text(-0.95, -0.68, 'Arena', 'FontSize', 9, 'Color', [0.5 0.5 0.5]);
 
 %--------------------------------------------------------------------------
