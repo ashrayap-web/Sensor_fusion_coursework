@@ -12,10 +12,10 @@ function [X_Est, P_Est, GT] = myEKF(out)
 % Arena bounds — measured from actual GT start position
 % Robot starts at y=-0.933, confirming y_min is approximately -1.0
 % Adjust x/y max based on your actual arena dimensions from the brief
-arena.x_min = -1.275;
-arena.x_max =  1.275;
-arena.y_min = -1.275;
-arena.y_max =  1.275;
+arena.x_min = -1.244;
+arena.x_max =  1.244;
+arena.y_min = -1.244;
+arena.y_max =  1.244;
 
 %==========================================================================
 % IMU AXIS REMAPPING
@@ -43,9 +43,9 @@ GYRO_SCALE   = pi/180; % deg/s → rad/s (verified from calib1_rotate.mat raw va
 % SENSOR MOUNTING — body frame offsets (metres)
 % ToF1=forward, ToF2=left, ToF3=right
 %==========================================================================
-sensors(1).offset_x =  0.10;  sensors(1).offset_y =  0.00;  sensors(1).angle_offset =  0.00;
-sensors(2).offset_x =  0.00;  sensors(2).offset_y =  0.10;  sensors(2).angle_offset =  pi/2;
-sensors(3).offset_x =  0.00;  sensors(3).offset_y = -0.10;  sensors(3).angle_offset = -pi/2;
+sensors(1).offset_x =  0.00;  sensors(1).offset_y =  0.03;  sensors(1).angle_offset =  0.00;
+sensors(2).offset_x =  -0.04;  sensors(2).offset_y =  0.03;  sensors(2).angle_offset =  pi/2;
+sensors(3).offset_x =  0.04;  sensors(3).offset_y = 0.03;  sensors(3).angle_offset = -pi/2;
 
 %==========================================================================
 % NOISE PARAMETERS
