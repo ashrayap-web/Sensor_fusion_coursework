@@ -237,8 +237,8 @@ for s_idx = 1:3
     S_tof = H_tof * P_pred * H_tof' + R_tof;
     innov = z_tof - h_val;
 
-    gate = min(3*sqrt(S_tof), 0.5);
-    
+    %gate = min(3*sqrt(S_tof), 0.5);
+    gate = min(10*sqrt(S_tof), 10);
     if abs(innov) > gate;              continue; end
 
     K_tof  = P_pred * H_tof' / S_tof;
