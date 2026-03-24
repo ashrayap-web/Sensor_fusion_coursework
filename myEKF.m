@@ -30,8 +30,8 @@ if nargin < 9; gt_init = []; end
 if isempty(is_init)
 
     % --- Arena bounds [m] ---
-    arena.x_min = -1.244;  arena.x_max = 1.244;
-    arena.y_min = -1.244;  arena.y_max = 1.244;
+    arena.x_min = -1.22;  arena.x_max = 1.22;
+    arena.y_min = -1.22;  arena.y_max = 1.22;
 
     % -----------------------------------------------------------------
     %  GYRO
@@ -70,7 +70,7 @@ if isempty(is_init)
     sensors(1).angle_offset =  pi/2;   % ToF1 -> Left
     sensors(1).offset_x = 0;  sensors(1).offset_y =  0;
     sensors(2).angle_offset =  pi;     % ToF2 -> Backward
-    sensors(2).offset_x = 0;  sensors(2).offset_y =  0.00;
+    sensors(2).offset_x = 0;  sensors(2).offset_y =  0;
     sensors(3).angle_offset = -pi/2;   % ToF3 -> Right
     sensors(3).offset_x = 0;  sensors(3).offset_y = 0;
     R_tof =  0.02;
