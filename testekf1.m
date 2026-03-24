@@ -1,7 +1,7 @@
 clear; close all; clc;
 clear myEKF   % REQUIRED every run — resets persistent variables
 
-DATA_FILE = 'task2_3 1.mat';   % <-- change to your task file
+DATA_FILE = 'task2_1 1.mat';   % <-- change to your task file
 data = load(DATA_FILE);
 out  = data.out;
 
@@ -48,8 +48,7 @@ fprintf('GT start: x=%.3f m, y=%.3f m, quat_theta=%.1f deg\n', ...
 % The EKF will brute-force the correct heading, but this print lets you
 % verify the sensor mounting is still correct.
 % =========================================================================
-arena.x_min=-1.244; arena.x_max=1.244; arena.y_min=-1.244; arena.y_max=1.244;
-
+arena.x_min=-1.22; arena.x_max=1.22; arena.y_min=-1.22; arena.y_max=1.22;
 fprintf('\nFirst valid ToF readings:\n');
 tof_all_c = {tof1_all, tof2_all, tof3_all};
 for s=1:3
@@ -99,6 +98,10 @@ for k=1:N_loop
     t2=get_dat(tof2_all,k); t3=get_dat(tof3_all,k);
     tmp=get_dat(temp_all,k); lp=get_dat(lp_acc_all,k);
     if k==1
+        % gt_init is optional — only theta is used as a fallback heading hint.
+        % Position is determined automatically from wall midpoint + ToF scan.
+        % Pass gt_init for diagnostic comparison, or omit entirely:
+        %   [X_Est,~]=myEKF(acc_all(k,:),gyro_all(k,:),mag,t1,t2,t3,tmp,lp);
         [X_Est,~]=myEKF(acc_all(k,:),gyro_all(k,:),mag,t1,t2,t3,tmp,lp,gt_init);
     else
         [X_Est,~]=myEKF(acc_all(k,:),gyro_all(k,:),mag,t1,t2,t3,tmp,lp);

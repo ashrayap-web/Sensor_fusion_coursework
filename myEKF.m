@@ -20,7 +20,7 @@ persistent x_state P arena ...
     sensors Q R_accel R_tof ...
     MAG_FUNCTIONAL mag_hard_iron mag_soft_iron mag_yaw_offset R_mag ...
     still_counter reacq_fired is_init sample_count ...
-    prev_tof
+    prev_tof USE_GT_INIT tof_age
 
 if nargin < 9; gt_init = []; end
 
@@ -67,6 +67,8 @@ if isempty(is_init)
     %    pi/-pi  = backward
     %  Update from calibrate_sensors.m output.
     % -----------------------------------------------------------------
+
+    sensors = repmat(struct('angle_offset', 0, 'offset_x', 0, 'offset_y', 0), 3, 1);
     sensors(1).angle_offset =  pi/2;   % ToF1 -> Left
     sensors(1).offset_x = 0;  sensors(1).offset_y =  0;
     sensors(2).angle_offset =  pi;     % ToF2 -> Backward
@@ -116,6 +118,14 @@ if isempty(is_init)
     Q(8,8) = 0.01;     % angular rate
 
     % -----------------------------------------------------------------
+    %  INITIALISATION MODE
+    %  USE_GT_INIT = true  → use ground-truth position (for testing)
+    %  USE_GT_INIT = false → assume start at middle of left wall (for
+    %                        assessment / unknown datasets with no GT)
+    % -----------------------------------------------------------------
+    USE_GT_INIT = true;   % FLIP TO false for the assessment
+
+    % -----------------------------------------------------------------
     %  INITIAL STATE & COVARIANCE
     % -----------------------------------------------------------------
     x_state       = zeros(8,1);
@@ -124,6 +134,7 @@ if isempty(is_init)
     reacq_fired   = false;
     sample_count  = 0;
     prev_tof      = nan(1,3);   % track previous ToF readings to skip duplicates
+    tof_age       = 999;        % samples since last ToF change (large = stationary)
     is_init       = true;
 end
 
@@ -132,25 +143,50 @@ dt = 1 / 200;   % All signals logged at 200 Hz in Simulink
 
 % =========================================================================
 %  FIRST-CALL INITIALISATION
-%  Set position from ground-truth start, scan heading from ToF.
+%  Mode A (USE_GT_INIT=true):  position from GT, heading scan from ToF.
+%  Mode B (USE_GT_INIT=false): position = middle of left wall, heading
+%                               scan over full 360 deg from that position.
 % =========================================================================
-if sample_count == 1 && ~isempty(gt_init) && numel(gt_init) >= 3
-    x_state(1) = gt_init(1);   % x [m]
-    x_state(4) = gt_init(2);   % y [m]
-    P(1,1) = 0.005;
-    P(4,4) = 0.005;
+if sample_count == 1
+    tof_z = read_tof(tof1, tof2, tof3);
 
-    % Full 360-candidate heading scan at startup
-    tof_z      = read_tof(tof1, tof2, tof3);
-    x_state(7) = heading_scan_full(gt_init(1), gt_init(2), tof_z, ...
-                                    gt_init(3), sensors, arena);
-    P(7,7) = (5*pi/180)^2;
+    if USE_GT_INIT && ~isempty(gt_init) && numel(gt_init) >= 3
+        % --- Mode A: GT-seeded position ---
+        x_state(1) = gt_init(1);   % x [m]
+        x_state(4) = gt_init(2);   % y [m]
+        P(1,1) = 0.005;
+        P(4,4) = 0.005;
 
-    fprintf('=== EKF INIT ===\n');
-    fprintf('  pos=(%.3f, %.3f)  theta_quat=%.1f deg  theta_scan=%.1f deg\n', ...
-        gt_init(1), gt_init(2), rad2deg(gt_init(3)), rad2deg(x_state(7)));
+        x_state(7) = heading_scan_full(gt_init(1), gt_init(2), tof_z, ...
+                                        gt_init(3), sensors, arena);
+        P(7,7) = (5*pi/180)^2;
+
+        fprintf('=== EKF INIT (GT mode) ===\n');
+        fprintf('  pos=(%.3f, %.3f)  theta_quat=%.1f deg  theta_scan=%.1f deg\n', ...
+            gt_init(1), gt_init(2), rad2deg(gt_init(3)), rad2deg(x_state(7)));
+
+    else
+        % --- Mode B: Blind init — middle of left wall ---
+        %  Robot is placed touching/near the left wall (x_min), centred
+        %  in Y.  We offset slightly inward so ray-casting works.
+        wall_offset = 0.05;   % [m] small offset from wall surface
+        x_state(1) = arena.x_min + wall_offset;   % x near left wall
+        x_state(4) = 0;                            % y = arena centre
+        P(1,1) = 0.02;    % fairly confident in x (touching wall)
+        P(4,4) = 0.5;     % less sure about y along the wall
+
+        % Heading scan: no GT hint, search full 360
+        x_state(7) = heading_scan_full(x_state(1), x_state(4), tof_z, ...
+                                        0, sensors, arena);
+        P(7,7) = (10*pi/180)^2;   % wider uncertainty without GT hint
+
+        fprintf('=== EKF INIT (BLIND mode — left wall) ===\n');
+        fprintf('  pos=(%.3f, %.3f)  theta_scan=%.1f deg\n', ...
+            x_state(1), x_state(4), rad2deg(x_state(7)));
+    end
+
     fprintf('  tof=[%.3f %.3f %.3f]\n', tof_z(1), tof_z(2), tof_z(3));
-    fprintf('  MAG_FUNCTIONAL=%d\n', MAG_FUNCTIONAL);
+    
     fprintf('================\n');
 end
 
@@ -159,7 +195,7 @@ end
 % =========================================================================
 % Velocity damping factor: models friction / drag so velocity decays
 % when acceleration drops.  alpha=0.98 means ~2% decay per 5ms step.
-alpha_v = 0.95;   % velocity damping per step
+alpha_v = 0.99;   % velocity damping per step
 F = [1, dt, 0.5*dt^2, 0,  0,        0, 0,   0;
      0,  alpha_v,  dt, 0,  0,        0, 0,   0;
      0,  0,        1, 0,  0,        0, 0,   0;
@@ -267,6 +303,8 @@ end
 %    - Innovation within 3-sigma gate
 % =========================================================================
 tof_inputs = {tof1, tof2, tof3};
+tof_changed = false;   % track if any ToF reading changed (robot moving)
+tof_age = tof_age + 1; % increment age; reset below if any ToF changes
 for s_idx = 1:3
     td = tof_inputs{s_idx};
     if any(isnan(td));               continue; end
@@ -277,6 +315,8 @@ for s_idx = 1:3
     if abs(x_pred(8)) > 0.3;         continue; end   % skip during turns (wall holes)
     % Skip duplicate readings (same value = zero-order hold, not new data)
     if z_tof == prev_tof(s_idx);     continue; end
+    tof_changed = true;
+    tof_age = 0;              % reset: ToF just changed
     prev_tof(s_idx) = z_tof;
     % Signal-strength filter: low signal = through wall hole or bad reading
     sig = double(td(3));
@@ -285,9 +325,8 @@ for s_idx = 1:3
     h_val = h_tof_sensor(x_pred, sensors(s_idx), arena);
     if isinf(h_val) || isnan(h_val); continue; end
 
-    H_tof    = compute_H_tof_numerical(x_pred, sensors(s_idx), arena, 1e-6);
-    H_tof(7) = 0;   % heading correction: gyro only, not ToF
-    H_tof(8) = 0;
+    H_tof_raw = compute_H_tof_numerical(x_pred, sensors(s_idx), arena, 1e-6);
+    H_tof     = [H_tof_raw(1:6), 0, 0];
 
     S_tof = H_tof * P_pred * H_tof' + R_tof;
     innov = z_tof - h_val;
@@ -329,11 +368,15 @@ end
 % =========================================================================
 ZUPT_R = 0.001;  % velocity measurement noise [m/s]^2
 ZAUT_R = 0.1;    % acceleration measurement noise [m/s^2]^2
-if omega_for_gate < OMEGA_STILL_THRESH
-    % Also check accel is near stationary (col1 ≈ gravity, col2/col3 near bias)
+if omega_for_gate < OMEGA_STILL_THRESH && tof_age > 40
+    % Only ZUPT when gyro quiet AND ToF hasn't changed for >40 samples
+    % (0.2s = 2 ToF cycles).  During constant-velocity motion, ToF readings
+    % keep changing every ~20 samples — tof_age stays low, blocking ZUPT.
     if ~any(isnan(acc))
-        accel_dev = abs(double(acc(1)) - 10.0);  % col1 should be ~10 m/s² (gravity)
-        if accel_dev < 0.5  % within 0.5 m/s² of gravity → stationary
+        grav_dev = abs(double(acc(1)) - 10.0);
+        fwd_dev  = abs(double(acc(ACCEL_X_IDX)) - ACCEL_BIAS_X);
+        lat_dev  = abs(double(acc(ACCEL_Y_IDX)) - ACCEL_BIAS_Y);
+        if grav_dev < 0.5 && fwd_dev < 0.4 && lat_dev < 0.4  % all axes quiet
             % Zero-velocity update
             [x_pred, P_pred] = ekf_update(x_pred, P_pred, 0, x_pred(2), ...
                                            [0,1,0, 0,0,0, 0,0], ZUPT_R);
