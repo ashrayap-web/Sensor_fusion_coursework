@@ -106,9 +106,9 @@ if isempty(is_init)
     still_counter = 0;
     reacq_fired   = false;
     sample_count  = 0;
-    prev_tof      = nan(1,3);   
-    tof_age       = 999;        
-    heading_refine_tof = zeros(5,3);  
+    prev_tof      = nan(1,3);   % track previous ToF readings to skip duplicates
+    tof_age       = 999;        % samples since any ToF changed (large = stationary)
+    heading_refine_tof = zeros(5,3);  % collect first 5 unique ToF readings
     heading_refine_count = 0;
     heading_refined = false;
     is_init       = true;
@@ -117,7 +117,12 @@ end
 sample_count = sample_count + 1;
 dt = 1 / 200;   % All signals logged at 200 Hz in Simulink
 
-
+% =========================================================================
+%  FIRST-CALL INITIALISATION
+%  Mode A (USE_GT_INIT=true):  position from GT, heading scan from ToF.
+%  Mode B (USE_GT_INIT=false): position = middle of left wall, heading
+%                               scan over full 360 deg from that position.
+% =========================================================================
 if sample_count == 1
     tof_z = read_tof(tof1, tof2, tof3);
 
@@ -138,6 +143,8 @@ if sample_count == 1
 
     else
         % --- Mode B: Blind init — middle of left wall ---
+        %  Robot is placed touching/near the left wall (x_min), centred
+        %  in Y.  We offset slightly inward so ray-casting works.
         wall_offset = 0.05;   % [m] small offset from wall surface
         x_state(1) = arena.x_min + wall_offset;   % x near left wall
         x_state(4) = 0;                            % y = arena centre
@@ -164,7 +171,6 @@ end
 % =========================================================================
 % Velocity damping factor: models friction / drag so velocity decays
 % when acceleration drops.  alpha=0.98 means ~2% decay per 5ms step.
-
 alpha_v = 0.99;   % velocity damping per step
 F = [1, dt, 0.5*dt^2, 0,  0,        0, 0,   0;
      0,  alpha_v,  dt, 0,  0,        0, 0,   0;
@@ -180,7 +186,8 @@ P_pred = F * P * F' + Q;
 
 % =========================================================================
 %  GYRO UPDATE
-
+%  Measures angular rate (state index 8).
+% =========================================================================
 omega_for_gate = 0;   % used later for motion gating
 if ~any(isnan(gyro))
     omega_raw   = GYRO_Z_SIGN * double(gyro(GYRO_Z_IDX));
@@ -202,7 +209,22 @@ end
 
 % =========================================================================
 %  MAGNETOMETER UPDATE
-
+%
+%  Provides an absolute heading reference to correct slow gyro drift.
+%
+%  Measurement model:
+%    Mx_cal = (mag(1) - hi_x) / si_x          (hard + soft iron correction)
+%    My_cal = (mag(2) - hi_y) / si_y
+%    z_mag  = atan2(My_cal, Mx_cal) + yaw_offset
+%
+%  The innovation angle is always wrapped to (-pi, pi].
+%
+%  GATING:
+%    - MAG_FUNCTIONAL must be true (from calibration)
+%    - Valid (non-NaN) mag reading
+%    - Robot is approximately still (|omega| < MAG_UPDATE_OMEGA_MAX)
+%      This prevents spurious heading corrections mid-rotation.
+% =========================================================================
 MAG_UPDATE_OMEGA_MAX = 0.15;   % [rad/s] — tune if mag causes jitter
 
 if MAG_FUNCTIONAL && ~any(isnan(mag)) && omega_for_gate < MAG_UPDATE_OMEGA_MAX
@@ -230,7 +252,8 @@ end
 
 % =========================================================================
 %  ACCELEROMETER UPDATE
-
+%  Body-frame accel → world frame via current heading, then updates ax/ay.
+% =========================================================================
 if ~any(isnan(acc))
     ax_body  = ACCEL_X_SIGN * (double(acc(ACCEL_X_IDX)) - ACCEL_BIAS_X);
     ay_body  = ACCEL_Y_SIGN * (double(acc(ACCEL_Y_IDX)) - ACCEL_BIAS_Y);
@@ -322,7 +345,17 @@ if ~heading_refined && tof_changed && omega_for_gate < OMEGA_STILL_THRESH
 end
 
 % =========================================================================
-
+%  POST-ROTATION HEADING RE-ACQUISITION
+%
+%  After a rotation event (omega was large, now settled), run a single
+%  constrained heading scan over ToF readings.  This corrects any gyro
+%  accumulation during the rotation.  Fires once per rotation event.
+%
+%  Uses max(|gyro|) across all columns so it does not mis-fire on axes
+%  that read near-zero during actual yaw rotations.
+% =========================================================================
+% REACQ disabled — gyro handles heading, ToF handles position only.
+% Brute-force heading scans cause harmful jumps when position is uncertain.
 if omega_for_gate > OMEGA_STILL_THRESH
     still_counter = 0;
     reacq_fired   = false;
@@ -336,7 +369,7 @@ end
 %  When all gyro axes are quiet AND acceleration is near its stationary
 %  value, the robot is not moving.  Inject vx=0, vy=0 measurements to
 %  kill residual velocity from the motion model.
-
+% =========================================================================
 ZUPT_R = 0.001;  % velocity measurement noise [m/s]^2
 ZAUT_R = 0.1;    % acceleration measurement noise [m/s^2]^2
 if omega_for_gate < OMEGA_STILL_THRESH && tof_age > 40
