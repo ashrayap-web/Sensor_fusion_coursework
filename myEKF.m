@@ -82,7 +82,7 @@ if isempty(is_init)
     sensors(2).offset_x = 0;  sensors(2).offset_y =  0.00;
     sensors(3).angle_offset = -pi/2;   % ToF3 -> Right
     sensors(3).offset_x = 0;  sensors(3).offset_y = 0;
-    R_tof =  0.0016;
+    R_tof =  0.02;
 
     % -----------------------------------------------------------------
     %  MAGNETOMETER
@@ -166,11 +166,14 @@ end
 % =========================================================================
 %  PREDICTION STEP  (constant-acceleration kinematic model)
 % =========================================================================
+% Velocity damping factor: models friction / drag so velocity decays
+% when acceleration drops.  alpha=0.98 means ~2% decay per 5ms step.
+alpha_v = 0.95;   % velocity damping per step
 F = [1, dt, 0.5*dt^2, 0,  0,        0, 0,   0;
-     0,  1,       dt, 0,  0,        0, 0,   0;
+     0,  alpha_v,  dt, 0,  0,        0, 0,   0;
      0,  0,        1, 0,  0,        0, 0,   0;
      0,  0,        0, 1, dt, 0.5*dt^2, 0,   0;
-     0,  0,        0, 0,  1,       dt, 0,   0;
+     0,  0,        0, 0, alpha_v,  dt, 0,   0;
      0,  0,        0, 0,  0,        1, 0,   0;
      0,  0,        0, 0,  0,        0, 1,  dt;
      0,  0,        0, 0,  0,        0, 0,   1];
@@ -284,6 +287,9 @@ for s_idx = 1:3
     % Skip duplicate readings (same value = zero-order hold, not new data)
     if z_tof == prev_tof(s_idx);     continue; end
     prev_tof(s_idx) = z_tof;
+    % Signal-strength filter: low signal = through wall hole or bad reading
+    sig = double(td(3));
+    if sig < 300;                     continue; end
 
     h_val = h_tof_sensor(x_pred, sensors(s_idx), arena);
     if isinf(h_val) || isnan(h_val); continue; end
@@ -295,7 +301,7 @@ for s_idx = 1:3
     S_tof = H_tof * P_pred * H_tof' + R_tof;
     innov = z_tof - h_val;
 
-    gate = min(3*sqrt(S_tof), 1.0);   % 3-sigma, cap at 1.0 m
+    gate = min(3*sqrt(S_tof), 0.8);   % 3-sigma, cap at 0.8 m
     if abs(innov) > gate;              continue; end
 
     K_tof  = P_pred * H_tof' / S_tof;
@@ -331,15 +337,22 @@ end
 %  kill residual velocity from the motion model.
 % =========================================================================
 ZUPT_R = 0.001;  % velocity measurement noise [m/s]^2
+ZAUT_R = 0.1;    % acceleration measurement noise [m/s^2]^2
 if omega_for_gate < OMEGA_STILL_THRESH
     % Also check accel is near stationary (col1 ≈ gravity, col2/col3 near bias)
     if ~any(isnan(acc))
         accel_dev = abs(double(acc(1)) - 10.0);  % col1 should be ~10 m/s² (gravity)
         if accel_dev < 0.5  % within 0.5 m/s² of gravity → stationary
+            % Zero-velocity update
             [x_pred, P_pred] = ekf_update(x_pred, P_pred, 0, x_pred(2), ...
                                            [0,1,0, 0,0,0, 0,0], ZUPT_R);
             [x_pred, P_pred] = ekf_update(x_pred, P_pred, 0, x_pred(5), ...
                                            [0,0,0, 0,1,0, 0,0], ZUPT_R);
+            % Zero-acceleration update
+            [x_pred, P_pred] = ekf_update(x_pred, P_pred, 0, x_pred(3), ...
+                                           [0,0,1, 0,0,0, 0,0], ZAUT_R);
+            [x_pred, P_pred] = ekf_update(x_pred, P_pred, 0, x_pred(6), ...
+                                           [0,0,0, 0,0,1, 0,0], ZAUT_R);
         end
     end
 end
@@ -368,15 +381,38 @@ end  % ← end myEKF
 % =========================================================================
 
 function best_theta = heading_scan_full(px, py, tof_z, theta_fallback, sensors, arena)
-    % 360-candidate scan over full 360 deg — used at initialisation only.
-    N_cands = 360;
-    theta_cands = linspace(-pi, pi, N_cands+1);
-    theta_cands = theta_cands(1:N_cands);
+    % Two-pass heading scan: coarse (1 deg) then fine (0.05 deg) around best.
+    % Pass 1: coarse scan
+    N_coarse = 360;
+    theta_coarse = linspace(-pi, pi, N_coarse+1);
+    theta_coarse = theta_coarse(1:N_coarse);
     best_theta  = theta_fallback;
     best_n      = -1;
     best_sse    = Inf;
-    for tc = 1:N_cands
-        th     = theta_cands(tc);
+    for tc = 1:N_coarse
+        th     = theta_coarse(tc);
+        x_cand = zeros(8,1);
+        x_cand(1) = px;  x_cand(4) = py;  x_cand(7) = th;
+        n = 0;  sse = 0;
+        for si = 1:3
+            if isnan(tof_z(si)); continue; end
+            h = h_tof_sensor(x_cand, sensors(si), arena);
+            if isinf(h) || isnan(h); continue; end
+            innov = tof_z(si) - h;
+            if abs(innov) < 0.5
+                n = n+1;  sse = sse+innov^2;
+            end
+        end
+        if n > best_n || (n == best_n && sse < best_sse)
+            best_n = n;  best_sse = sse;  best_theta = th;
+        end
+    end
+    % Pass 2: fine scan ±3 deg around coarse best (0.05 deg steps)
+    fine_range = deg2rad(3);
+    N_fine = 120;
+    theta_fine = linspace(best_theta - fine_range, best_theta + fine_range, N_fine+1);
+    for tc = 1:N_fine+1
+        th     = theta_fine(tc);
         x_cand = zeros(8,1);
         x_cand(1) = px;  x_cand(4) = py;  x_cand(7) = th;
         n = 0;  sse = 0;

@@ -1,7 +1,7 @@
 clear; close all; clc;
 clear myEKF   % REQUIRED every run — resets persistent variables
 
-DATA_FILE = 'task2_ 1.mat';   % <-- change to your task file
+DATA_FILE = 'task2_5.mat';   % <-- change to your task file
 data = load(DATA_FILE);
 out  = data.out;
 
@@ -22,14 +22,21 @@ gt_quat = out.GT_rotation.signals.values;
 N_gt    = size(gt_quat,1);
 N_imu   = size(acc_all,1);
 
+% All signals (IMU + GT) are logged at the same 200 Hz rate in Simulink.
+tout      = out.tout;
+t_sim_end = tout(end);
+N         = N_imu;   % N_imu == N_gt (same timebase)
+
+fprintf('tout end: %.2f s  |  Samples: %d (IMU=%d, GT=%d)  |  Rate: 200 Hz\n', ...
+        t_sim_end, N, N_imu, N_gt);
+
 gt_yaw = zeros(N_gt,1);
 for i = 1:N_gt
     W_=gt_quat(i,1); QX_=gt_quat(i,2); QY_=gt_quat(i,3); QZ_=gt_quat(i,4);
     gt_yaw(i) = atan2(2*(W_*QZ_+QX_*QY_), 1-2*(QY_^2+QZ_^2));
 end
 
-t_imu    = (0:N_imu-1)/104;
-t_gt_vec = (0:N_gt-1)/200;
+t_vec = (0:N-1)/200;   % all data at 200 Hz
 theta0   = gt_yaw(1);
 gt_init  = [gt_pos(1,1), gt_pos(1,2), theta0];
 
@@ -84,10 +91,10 @@ fprintf(' brute-force heading will still find the correct initial theta.)\n\n');
 % =========================================================================
 % RUN EKF
 % =========================================================================
-N = size(acc_all,1);
-X_History = zeros(8,N);
+N_loop = N;
+X_History = zeros(8,N_loop);
 
-for k=1:N
+for k=1:N_loop
     mag=get_dat(mag_all,k); t1=get_dat(tof1_all,k);
     t2=get_dat(tof2_all,k); t3=get_dat(tof3_all,k);
     tmp=get_dat(temp_all,k); lp=get_dat(lp_acc_all,k);
@@ -99,11 +106,12 @@ for k=1:N
     X_History(:,k)=X_Est;
 end
 
-gt_xy  = gt_pos(1:N,1:2);
-ekf_xy = X_History([1,4],1:N)';
-rmse   = sqrt(mean(sum((ekf_xy-gt_xy).^2,2)));
-err_x  = ekf_xy(:,1)-gt_xy(:,1);
-err_y  = ekf_xy(:,2)-gt_xy(:,2);
+% Direct comparison — IMU and GT are on the same 200 Hz timebase
+gt_xy  = gt_pos(1:N, 1:2);
+ekf_xy = X_History([1,4], 1:N)';
+rmse   = sqrt(mean(sum((ekf_xy - gt_xy).^2, 2)));
+err_x  = ekf_xy(:,1) - gt_xy(:,1);
+err_y  = ekf_xy(:,2) - gt_xy(:,2);
 
 fprintf('=== RESULTS ===\n');
 fprintf('RMSE:    %.4f m\n', rmse);
@@ -125,16 +133,16 @@ xlabel('X [m]'); ylabel('Y [m]'); legend('Location','best');
 
 figure('Name','X and Y Error over Time');
 subplot(2,1,1);
-plot(t_imu,err_x,'r','LineWidth',1.0); hold on; yline(0,'k--'); grid on;
+plot(t_vec,err_x,'r','LineWidth',1.0); hold on; yline(0,'k--'); grid on;
 ylabel('X error [m]'); title(sprintf('X error  mean=%+.3f m',mean(err_x)));
 subplot(2,1,2);
-plot(t_imu,err_y,'b','LineWidth',1.0); hold on; yline(0,'k--'); grid on;
+plot(t_vec,err_y,'b','LineWidth',1.0); hold on; yline(0,'k--'); grid on;
 ylabel('Y error [m]'); xlabel('Time [s]');
 title(sprintf('Y error  mean=%+.3f m',mean(err_y)));
 
 figure('Name','Heading over Time');
-plot(t_gt_vec,rad2deg(gt_yaw),'b--','LineWidth',1.5,'DisplayName','GT Yaw'); hold on;
-plot(t_imu,rad2deg(X_History(7,:)),'r','LineWidth',1.2,'DisplayName','EKF Theta');
+plot(t_vec,rad2deg(gt_yaw),'b--','LineWidth',1.5,'DisplayName','GT Yaw'); hold on;
+plot(t_vec,rad2deg(X_History(7,:)),'r','LineWidth',1.2,'DisplayName','EKF Theta');
 grid on; xlabel('Time [s]'); ylabel('Heading [deg]');
 title('Heading over Time'); legend('Location','best');
 
